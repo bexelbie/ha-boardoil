@@ -1,0 +1,211 @@
+name: Check upstream BoardOil release
+
+on:
+  schedule:
+    # Off-the-hour minute, arbitrary hour: only daily cadence matters, and
+    # avoiding round times spreads load away from GitHub Actions' busiest
+    # scheduling minutes.
+    - cron: "37 11 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Read current pinned version
+        id: current
+        run: |
+          version=$(grep -oP '(?<=ghcr\.io/dozigden/boardoil:)\S+' boardoil/Dockerfile)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Read latest upstream release
+        id: latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(gh release view --repo dozigden/boardoil --json tagName -q .tagName)
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Compare versions
+        id: compare
+        run: |
+          if [ "${{ steps.current.outputs.version }}" = "${{ steps.latest.outputs.version }}" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check for existing update PR
+        id: existing
+        if: steps.compare.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          branch="upstream-bump-${{ steps.latest.outputs.version }}"
+          count=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$branch" --state open --json number -q 'length')
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "open=$([ "$count" -gt 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Diff upstream Dockerfile and LICENSE
+        id: diff
+        if: steps.compare.outputs.changed == 'true'
+        run: |
+          old_tag="v${{ steps.current.outputs.version }}"
+          new_tag="${{ steps.latest.outputs.tag }}"
+          raw="https://raw.githubusercontent.com/dozigden/boardoil"
+
+          fetch() { curl -fsSL "$1" 2>/dev/null || echo "(could not fetch $1)"; }
+
+          fetch "$raw/$old_tag/Dockerfile" > old_dockerfile.txt
+          fetch "$raw/$new_tag/Dockerfile" > new_dockerfile.txt
+          diff -u old_dockerfile.txt new_dockerfile.txt > dockerfile.diff || true
+
+          fetch "$raw/$old_tag/LICENSE" > old_license.txt
+          fetch "$raw/$new_tag/LICENSE" > new_license.txt
+          diff -u old_license.txt new_license.txt > license.diff || true
+
+          echo "dockerfile_changed=$([ -s dockerfile.diff ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "license_changed=$([ -s license.diff ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Bump Dockerfile and config.yaml
+        id: bump
+        if: steps.compare.outputs.changed == 'true' && steps.existing.outputs.open == 'false'
+        run: |
+          sed -i "s|ghcr\.io/dozigden/boardoil:.*|ghcr.io/dozigden/boardoil:${{ steps.latest.outputs.version }}|" boardoil/Dockerfile
+          sed -i "s|^version: .*|version: \"${{ steps.latest.outputs.version }}\"|" boardoil/config.yaml
+
+      - name: Build smoke-test image
+        if: steps.bump.outcome == 'success' && steps.compare.outputs.changed == 'true' && steps.existing.outputs.open == 'false'
+        run: docker build -t boardoil-smoke:test ./boardoil
+
+      - name: Run smoke test container
+        id: smoke
+        if: steps.bump.outcome == 'success' && steps.compare.outputs.changed == 'true' && steps.existing.outputs.open == 'false'
+        run: |
+          docker run -d --name boardoil-smoke -p 5000:5000 boardoil-smoke:test
+          healthy=false
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:5000/api/health >/dev/null 2>&1; then
+              healthy=true
+              break
+            fi
+            sleep 2
+          done
+          echo "healthy=$healthy" >> "$GITHUB_OUTPUT"
+
+      - name: Dump logs and fail if unhealthy
+        if: steps.smoke.outcome == 'success' && steps.smoke.outputs.healthy != 'true'
+        run: |
+          docker logs boardoil-smoke 2>&1 | tail -200 || true
+          exit 1
+
+      - name: Clean up smoke container
+        if: always()
+        run: docker rm -f boardoil-smoke 2>/dev/null || true
+
+      - name: Open pull request
+        id: pr
+        if: steps.smoke.outputs.healthy == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          branch="${{ steps.existing.outputs.branch }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add boardoil/Dockerfile boardoil/config.yaml
+          git commit -m "Bump upstream BoardOil to ${{ steps.latest.outputs.version }}"
+          git push origin "$branch"
+
+          {
+            echo "Upstream released \`${{ steps.latest.outputs.tag }}\`."
+            echo
+            echo "Smoke test passed: image built and \`/api/health\` reported healthy."
+            echo
+            echo "Before merging, work the remaining [UPDATE.md](../blob/main/UPDATE.md) checklist by hand,"
+            echo "in particular anything a text diff can't judge (behavioral changes, /data layout, licensing intent)."
+            echo
+            echo "### Upstream Dockerfile diff (${{ steps.diff.outputs.dockerfile_changed }} changed)"
+            echo '```diff'
+            cat dockerfile.diff
+            echo '```'
+            echo
+            echo "### Upstream LICENSE diff (${{ steps.diff.outputs.license_changed }} changed)"
+            echo '```diff'
+            cat license.diff
+            echo '```'
+          } > pr_body.md
+
+          pr_url=$(gh pr create --title "Bump upstream BoardOil to ${{ steps.latest.outputs.version }}" \
+            --base main --head "$branch" --body-file pr_body.md)
+          echo "created=true" >> "$GITHUB_OUTPUT"
+          echo "url=$pr_url" >> "$GITHUB_OUTPUT"
+
+      - name: Submit automated report
+        if: always()
+        env:
+          NOTIFICATION_URL: ${{ secrets.NOTIFICATION_URL }}
+          REPORT_EVENT: boardoil.upstream_check.completed
+          REPORT_OUTCOME: ${{ job.status }}
+          REPORT_WORKFLOW: ${{ github.workflow }}
+        run: |
+          set -euo pipefail
+          : "${NOTIFICATION_URL:?NOTIFICATION_URL must be configured}"
+          : "${REPORT_EVENT:?REPORT_EVENT must be set}"
+          : "${REPORT_OUTCOME:?REPORT_OUTCOME must be set}"
+          : "${REPORT_WORKFLOW:?REPORT_WORKFLOW must be set}"
+          : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY must be set}"
+          : "${GITHUB_RUN_ID:?GITHUB_RUN_ID must be set}"
+          : "${GITHUB_RUN_ATTEMPT:?GITHUB_RUN_ATTEMPT must be set}"
+          : "${GITHUB_SERVER_URL:?GITHUB_SERVER_URL must be set}"
+
+          event_id="github-actions:${GITHUB_REPOSITORY}:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:${REPORT_EVENT}"
+          occurred_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          payload="$(jq -n \
+            --arg workflow "$REPORT_WORKFLOW" \
+            --arg run_url "$run_url" \
+            --arg current_version "${{ steps.current.outputs.version }}" \
+            --arg latest_version "${{ steps.latest.outputs.version }}" \
+            --arg changed "${{ steps.compare.outputs.changed }}" \
+            --arg dockerfile_changed "${{ steps.diff.outputs.dockerfile_changed || 'false' }}" \
+            --arg license_changed "${{ steps.diff.outputs.license_changed || 'false' }}" \
+            --arg pr_created "${{ steps.pr.outputs.created || 'false' }}" \
+            --arg pr_url "${{ steps.pr.outputs.url || '' }}" \
+            '{workflow:$workflow,run_url:$run_url,current_version:$current_version,
+              latest_version:$latest_version,update_available:$changed,
+              upstream_dockerfile_changed:$dockerfile_changed,
+              upstream_license_changed:$license_changed,
+              pr_created:$pr_created,pr_url:$pr_url}')"
+          jq -e 'type == "object"' >/dev/null <<<"$payload"
+          report="$(jq -n \
+            --arg event_id "$event_id" \
+            --arg occurred_at "$occurred_at" \
+            --arg event "$REPORT_EVENT" \
+            --arg outcome "$REPORT_OUTCOME" \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --argjson payload "$payload" \
+            '{schema:1,event_id:$event_id,occurred_at:$occurred_at,
+              source:"github-actions",event:$event,outcome:$outcome,
+              payload:$payload,repository:$repository}')"
+
+          for attempt in 1 2 3; do
+            status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+              --max-time 10 -H 'Content-Type: application/json' \
+              --data "$report" "$NOTIFICATION_URL" 2>/dev/null)" || status=000
+            case "$status" in
+              2??) exit 0 ;;
+            esac
+            sleep "$attempt"
+          done
+
+          printf 'report submission failed after 3 attempts (last HTTP status %s)\n' \
+            "$status" >&2
+          exit 1

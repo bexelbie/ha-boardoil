@@ -81,6 +81,20 @@ jobs:
           sed -i "s|ghcr\.io/dozigden/boardoil:.*|ghcr.io/dozigden/boardoil:${{ steps.latest.outputs.version }}|" boardoil/Dockerfile
           sed -i "s|^version: .*|version: \"${{ steps.latest.outputs.version }}\"|" boardoil/config.yaml
 
+      - name: Prepend changelog
+        if: steps.bump.outcome == 'success'
+        env:
+          VERSION: ${{ steps.latest.outputs.version }}
+          UPSTREAM_TAG: ${{ steps.latest.outputs.tag }}
+        run: |
+          {
+            printf '## %s\n\n' "$VERSION"
+            printf -- '- Update BoardOil to %s.\n\n' "$VERSION"
+            printf '[Upstream release notes](https://github.com/dozigden/boardoil/releases/tag/%s)\n\n' "$UPSTREAM_TAG"
+            cat boardoil/CHANGELOG.md
+          } > changelog.tmp
+          mv changelog.tmp boardoil/CHANGELOG.md
+
       - name: Build smoke-test image
         if: steps.bump.outcome == 'success' && steps.compare.outputs.changed == 'true' && steps.existing.outputs.open == 'false'
         run: docker build -t boardoil-smoke:test ./boardoil
@@ -124,7 +138,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -b "$branch"
-          git add boardoil/Dockerfile boardoil/config.yaml
+          git add boardoil/Dockerfile boardoil/config.yaml boardoil/CHANGELOG.md
           git commit -m "Bump upstream BoardOil to ${{ steps.latest.outputs.version }}"
           git push origin "$branch"
 

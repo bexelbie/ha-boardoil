@@ -2,8 +2,9 @@
 
 Maintainer checklist for bumping this wrapper when
 [dozigden/boardoil](https://github.com/dozigden/boardoil) cuts a new release.
-Nothing here runs automatically — a human has to notice the release and work
-this list.
+The daily upstream check opens a version-bump PR after a container health check
+and adds a changelog entry linking to the upstream release. Review that PR using
+this checklist before merging.
 
 ## 1. Read the release
 
@@ -46,8 +47,16 @@ not a paraphrase.
 - `boardoil/Dockerfile`: `FROM ghcr.io/dozigden/boardoil:X.Y.Z`
 - `boardoil/config.yaml`: `version: "X.Y.Z"`
 
-They're both hand-maintained today — nothing errors if they drift, but the
-app's displayed version will lie about what image it's actually running.
+The daily check updates both files. Keep them in sync when editing manually:
+the app's displayed version must match the image it runs.
+
+Review the matching entry at the top of `boardoil/CHANGELOG.md`, which Home
+Assistant displays as release notes. Summarize relevant upstream changes and
+call out migrations, breaking changes, and any required user action; the
+automated entry only supplies a version and upstream link.
+
+Run `ruby tests/check_changelog.rb` to check changelog generation and history
+preservation after changing the update workflow.
 
 ## 5. Push and confirm the build
 

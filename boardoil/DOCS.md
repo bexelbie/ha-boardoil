@@ -1,8 +1,9 @@
 # BoardOil
 
-BoardOil stores its database, uploaded images, authentication signing key, and
-automatic pre-migration database backups in `/data`. Home Assistant preserves
-this directory across restarts and includes all of it in add-on backups.
+BoardOil stores its database, uploaded images and attachments, authentication
+signing key, and automatic pre-migration database backups in `/data`. Home
+Assistant preserves this directory across restarts and includes all of it in
+add-on backups.
 
 ## HTTPS through another add-on
 
@@ -45,6 +46,7 @@ quiescent. The backup includes the complete `/data` directory:
 
 - `boardoil.db`
 - `images/`
+- `attachments/`
 - `boardoil-auth-signing-key`
 - `backups/`
 
@@ -56,5 +58,5 @@ backup space, but avoids silently discarding BoardOil's built-in recovery
 mechanism.
 
 Restore the Home Assistant backup containing BoardOil's add-on data, then start
-BoardOil. Keep the database, images, and signing key together; restoring only
-the database is not a complete installation restore.
+BoardOil. Keep the database, images, attachments, and signing key together;
+restoring only the database is not a complete installation restore.

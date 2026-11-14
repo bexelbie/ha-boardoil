@@ -1,6 +1,13 @@
 ## 1.9.0
 
-- Update BoardOil to 1.9.0.
+- Add full-editor card creation and more consistent form validation.
+- Expand MCP support with diagnostics, bulk delete/archive, and board reordering.
+- Fix Safari tab restoration and large slicks, and improve archived slick restoration.
+- Repair tag normalization and enforce unique user email addresses.
+
+This update migrates the database and can merge duplicate tags or rename duplicate
+email addresses. Back up the complete app data before upgrading. To roll back,
+restore that backup together with the previous app version.
 
 [Upstream release notes](https://github.com/dozigden/boardoil/releases/tag/v1.9.0)
 

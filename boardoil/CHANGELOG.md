@@ -1,3 +1,9 @@
+## 1.10.0
+
+- Update BoardOil to 1.10.0.
+
+[Upstream release notes](https://github.com/dozigden/boardoil/releases/tag/v1.10.0)
+
 ## 1.9.0
 
 - Add full-editor card creation and more consistent form validation.
